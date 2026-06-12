@@ -1747,10 +1747,19 @@ function _doImport(data){
     let added=0,dupes=0;
     const newLeads=[];
 
+    let skippedOtherCity=0;
     rows.forEach(row=>{
       const obj={};
       Object.keys(row).forEach(k=>{obj[k.trim()]=String(row[k]||'').trim();});
       if(!obj['REF. IDEALISTA']&&!obj.EMAIL&&!obj.USUARIO)return;
+
+      // Skip leads not related to Barcelona activos (REF. CLIENTE must start with B_)
+      const ref=(obj['REF. CLIENTE']||'').trim();
+      if(ref && !ref.startsWith('B_')){
+        skippedOtherCity++;
+        return; // discard — belongs to another city/team (e.g. Madrid M_)
+      }
+
       // Map estado
       const rawEst=obj.ESTADO?.trim()||obj.ESTADO_LEAD?.trim()||'';
       obj.ESTADO_LEAD=EM[rawEst]||'NUEVO';
@@ -1772,11 +1781,15 @@ function _doImport(data){
     document.getElementById('import-summary').innerHTML=
       `<div class="is-i"><div class="isn" style="color:var(--green)">${added}</div><div class="isl">Nuevos leads</div></div>`+
       `<div class="is-i"><div class="isn" style="color:var(--ink3)">${dupes}</div><div class="isl">Duplicados</div></div>`+
+      `<div class="is-i"><div class="isn" style="color:var(--red)">${skippedOtherCity}</div><div class="isl">Otra ciudad (M_/etc)</div></div>`+
       `<div class="is-i"><div class="isn" style="color:var(--sand)">${LEADS.length}</div><div class="isl">Total CRM</div></div>`;
     document.getElementById('import-log').innerHTML=
       newLeads.slice(0,10).map(l=>`<div style="font-size:12px;color:var(--ink2);padding:3px 0;border-bottom:1px solid var(--line)">✅ ${l.USUARIO||l.EMAIL||'Lead'} — ${l['REF. CLIENTE']||l['DESCRIPCIÓN']||''}</div>`).join('');
-    if(added>0)toast(added+' leads importados','ok');
-    else if(dupes>0)toast('Ya estaban todos en el CRM ('+dupes+' duplicados)','in');
+    let msg=added+' leads importados';
+    if(dupes>0)msg+=', '+dupes+' duplicados';
+    if(skippedOtherCity>0)msg+=', '+skippedOtherCity+' descartados (otra ciudad/equipo)';
+    if(added>0)toast(msg,'ok');
+    else if(dupes>0||skippedOtherCity>0)toast(msg,'in');
     else toast('No se encontraron leads válidos','er');
   }catch(err){
     toast('Error al importar: '+err.message,'er');
