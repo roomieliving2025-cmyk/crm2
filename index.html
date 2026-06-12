@@ -628,6 +628,7 @@ tr:hover td{background:var(--cream2);cursor:pointer}
         <button class="btn btn-p" onclick="exportAll()">↓ Descargar backup completo</button>
         <button class="btn btn-g" onclick="importBackup()">↑ Restaurar backup</button>
         <button class="btn btn-g" onclick="restoreBaseTpls()">↩ Restaurar plantillas base</button>
+        <button class="btn btn-g" style="color:var(--red)" onclick="cleanNonBcnLeads()">🗑 Eliminar leads de otras ciudades (Madrid)</button>
         <button class="btn btn-g" style="color:var(--red)" onclick="if(confirm('¿Resetear leads a datos originales?'))clearData()">⚠ Reset leads</button>
       </div>
     </div>
@@ -1942,6 +1943,25 @@ function importBackup(){
     reader.readAsText(e.target.files[0]);
   };
   inp.click();
+}
+function cleanNonBcnLeads(){
+  const before=LEADS.length;
+  const removed=LEADS.filter(l=>{
+    const ref=(l['REF. CLIENTE']||'').trim();
+    return ref && !ref.startsWith('B_');
+  });
+  if(removed.length===0){
+    toast('No hay leads de otras ciudades para eliminar','in');
+    return;
+  }
+  if(!confirm('Se eliminarán '+removed.length+' leads que no son de Barcelona (ej. M_... de Madrid). ¿Continuar?'))return;
+  LEADS=LEADS.filter(l=>{
+    const ref=(l['REF. CLIENTE']||'').trim();
+    return !ref || ref.startsWith('B_');
+  });
+  saveLeads();
+  populateFilters();renderDashboard();renderLeads();renderKanban();
+  toast('Eliminados '+removed.length+' leads de otras ciudades. Total: '+LEADS.length,'ok');
 }
 function clearData(){if(!confirm('¿Resetear leads?'))return;LEADS=LEADS_PRELOADED.map(l=>({...l}));saveLeads();renderDashboard();renderLeads();renderKanban();populateFilters();toast('Reset OK','in');}
 
