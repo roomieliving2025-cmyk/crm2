@@ -160,6 +160,8 @@ tr:hover td{background:var(--cream2);cursor:pointer}
 .kcf{display:flex;align-items:center;justify-content:space-between}
 .kca{display:flex;gap:3px;margin-top:7px}
 .k-empty{text-align:center;padding:20px;color:var(--ink3);font-size:12px;border:1.5px dashed var(--line2);border-radius:7px;margin:2px}
+.kcol-collapsed{transition:width .2s}
+.kcol-collapsed:hover{background:var(--cream2)}
 
 /* ── ACTIVOS ─────────────────────────────────────────────── */
 .agrid{display:flex;flex-direction:column;gap:8px}
@@ -1069,17 +1071,46 @@ function renderLeads(){
 // ─── KANBAN with drag & drop ──────────────────────────────────
 let dragLeadIdx=null;
 
+function toggleKanbanCol(status){
+  const collapsed=JSON.parse(localStorage.getItem('rl_kanban_collapsed')||'[]');
+  const idx=collapsed.indexOf(status);
+  if(idx>=0)collapsed.splice(idx,1);
+  else collapsed.push(status);
+  localStorage.setItem('rl_kanban_collapsed',JSON.stringify(collapsed));
+  renderKanban();
+}
+
 function renderKanban(){
   const mes=document.getElementById('k-mes')?.value||'',ref=document.getElementById('k-ref')?.value||'';
   let L=LEADS;
   if(mes)L=L.filter(l=>l.MES===mes);
   if(ref)L=L.filter(l=>l['REF. CLIENTE']===ref);
   const cols=[{s:'NUEVO',c:'#4a9eff'},{s:'CONTACTADO',c:'#9b7fe8'},{s:'VISITADO',c:'#e8a04a'},{s:'CONVERTIDO',c:'#2ec27e'},{s:'DESCARTADO',c:'#e05c5c'}];
+  const collapsed=JSON.parse(localStorage.getItem('rl_kanban_collapsed')||'[]');
+
   document.getElementById('kanban-board').innerHTML=cols.map(col=>{
-    const cl=L.filter(l=>(l.ESTADO_LEAD||'NUEVO')===col.s);
-    const cards=cl.slice(0,40).map(l=>{
+    const isCollapsed=collapsed.includes(col.s);
+    let cl=L.filter(l=>(l.ESTADO_LEAD||'NUEVO')===col.s);
+    // Sort: leads moved recently to this status go to the BOTTOM (by _movedAt timestamp ascending = oldest first, no timestamp = original order first)
+    cl=[...cl].sort((a,b)=>{
+      const ta=a._movedAt||0, tb=b._movedAt||0;
+      if(ta===0&&tb===0) return LEADS.indexOf(a)-LEADS.indexOf(b); // original order
+      return ta-tb; // older moves first, newest moves last (bottom)
+    });
+
+    if(isCollapsed){
+      return `<div class="kcol kcol-collapsed" style="width:48px;min-width:48px">
+        <div class="kh" style="flex-direction:column;gap:8px;padding:12px 6px;cursor:pointer;height:100%" onclick="toggleKanbanCol('${col.s}')" title="Expandir ${col.s}">
+          <div class="kdot" style="background:${col.c}"></div>
+          <div class="kc" style="writing-mode:vertical-rl;text-orientation:mixed;font-weight:600">${col.s} (${cl.length})</div>
+          <div style="margin-top:auto;font-size:14px;color:var(--ink3)">▸</div>
+        </div>
+      </div>`;
+    }
+
+    const cards=cl.slice(0,60).map(l=>{
       const idx=LEADS.indexOf(l),lang=(l.IDIOMA||'').toLowerCase(),tipo=getLeadType(l);
-      const tipoIcon=tipo==='hab'?'🛏':'tipo'==='local'?'🏪':'🏠';
+      const tipoIcon=tipo==='hab'?'🛏':tipo==='local'?'🏪':'🏠';
       return `<div class="kcard" draggable="true"
         ondragstart="dragStart(event,${idx})"
         ondragend="dragEnd(event)"
@@ -1087,7 +1118,7 @@ function renderKanban(){
         <div class="kcn">${l.USUARIO||'—'}</div>
         <div class="kcp">${tipoIcon} ${(l['REF. CLIENTE']||'').substring(0,26)}</div>
         <div class="kcf">
-          <span style="font-size:10px;color:var(--t3)">${l.MES||''}</span>
+          <span style="font-size:10px;color:var(--ink3)">${l.MES||''}</span>
           <span class="lb">${LF[lang]||''} ${(l.IDIOMA||'?').toUpperCase()}</span>
         </div>
         <div class="kca" onclick="event.stopPropagation()">
@@ -1096,6 +1127,7 @@ function renderKanban(){
         </div>
       </div>`;
     }).join('');
+
     return `<div class="kcol"
       ondragover="dragOver(event)"
       ondrop="dropLead(event,'${col.s}')"
@@ -1104,6 +1136,7 @@ function renderKanban(){
         <div class="kdot" style="background:${col.c}"></div>
         <div class="kt">${col.s}</div>
         <div class="kc">${cl.length}</div>
+        <button onclick="toggleKanbanCol('${col.s}')" title="Minimizar columna" style="background:none;border:none;color:var(--ink3);cursor:pointer;font-size:13px;padding:2px 4px;border-radius:4px" onmouseenter="this.style.background='var(--cream2)'" onmouseleave="this.style.background='none'">◂</button>
       </div>
       <div class="kb" id="kb-${col.s}">
         ${cards||'<div class="k-empty">Sin leads</div>'}
@@ -1138,6 +1171,7 @@ function dropLead(e,newStatus){
   const oldStatus=lead.ESTADO_LEAD;
   if(oldStatus===newStatus){dragLeadIdx=null;return;}
   lead.ESTADO_LEAD=newStatus;
+  lead._movedAt=Date.now(); // moves card to bottom of new column
   addHist(dragLeadIdx,`Estado: ${oldStatus} → ${newStatus}`);
   saveLeads();
   renderKanban();
