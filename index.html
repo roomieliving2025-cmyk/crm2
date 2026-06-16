@@ -830,6 +830,101 @@ function showCalEventDetail(ref,guest,start,end){
 }
 
 
+
+function processImport(file){
+  const reader=new FileReader();
+  reader.onload=function(ev){
+    const data=new Uint8Array(ev.target.result);
+    if(typeof XLSX!=='undefined'){_doImport(data);}
+    else{
+      const sc=document.createElement('script');
+      sc.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+      sc.onload=()=>_doImport(data);
+      sc.onerror=()=>{toast('Error cargando SheetJS','er');};
+      document.head.appendChild(sc);
+      toast('Cargando soporte XLS...','in');
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function _doImport(data){
+  try{
+    let rows=[];
+    try{
+      const wb=XLSX.read(data,{type:'array'});
+      const sh=wb.Sheets[wb.SheetNames[0]];
+      rows=XLSX.utils.sheet_to_json(sh,{defval:''});
+    }catch(xlsErr){
+      const text=new TextDecoder('utf-8').decode(data);
+      const lines=text.split('\n').filter(l=>l.trim());
+      if(lines.length<2){toast('Archivo vacío','er');return;}
+      const sep=lines[0].includes('\t')?'\t':',';
+      const headers=lines[0].split(sep).map(h=>h.trim().replace(/"/g,''));
+      rows=lines.slice(1).map(line=>{
+        const vals=line.split(sep).map(v=>v.trim().replace(/"/g,''));
+        const obj={};headers.forEach((h,i)=>{obj[h]=vals[i]||'';});return obj;
+      });
+    }
+    if(!rows.length){toast('Sin datos en el archivo','er');return;}
+
+    const makeKey=(obj)=>{
+      const ref=String(obj['REF. IDEALISTA']||'').replace(/\.0$/,'').trim();
+      const email=String(obj.EMAIL||'').trim().toLowerCase();
+      const tel=String(obj['TELÉFONO']||obj.TELEFONO||'').replace(/[\s\-\+\(\)]/g,'').slice(-9);
+      const nombre=String(obj.USUARIO||'').trim().toLowerCase().slice(0,10);
+      if(ref&&email)return ref+'__'+email;
+      if(ref&&tel)return ref+'__t__'+tel;
+      if(ref&&nombre)return ref+'__n__'+nombre;
+      return ref+'__'+Date.now()+Math.random();
+    };
+
+    const existing=new Set(LEADS.map(l=>makeKey(l)));
+    let added=0,dupes=0,skipped=0;
+    const newLeads=[];
+
+    rows.forEach(row=>{
+      const obj={};
+      Object.keys(row).forEach(k=>{obj[k.trim()]=String(row[k]||'').trim();});
+      if(!obj['REF. IDEALISTA']&&!obj.EMAIL&&!obj.USUARIO)return;
+      // Skip non-Barcelona refs
+      const ref=(obj['REF. CLIENTE']||'').trim();
+      if(ref&&!ref.startsWith('B_')){skipped++;return;}
+      // Map estado using 6-state system
+      const rawEst=obj.ESTADO?.trim()||obj.ESTADO_LEAD?.trim()||'';
+      obj.ESTADO_LEAD=ESTADO_MAP_IMPORT[rawEst]||'NUEVO';
+      // Parse MES from FECHA
+      if(!obj.MES&&obj.FECHA){
+        const parts=obj.FECHA.split(/[\/\s]/);
+        if(parts.length>=3)obj.MES=parts[1].padStart(2,'0')+'/'+parts[2];
+      }
+      const key=makeKey(obj);
+      if(existing.has(key)){dupes++;return;}
+      existing.add(key);
+      newLeads.push(obj);
+      added++;
+    });
+
+    LEADS.push(...newLeads);
+    saveLeads();populateFilters();renderDashboard();renderLeads();renderKanban();
+    document.getElementById('import-results').classList.add('show');
+    document.getElementById('import-summary').innerHTML=
+      `<div class="is-i"><div class="isn" style="color:var(--green)">${added}</div><div class="isl">Nuevos</div></div>`+
+      `<div class="is-i"><div class="isn" style="color:var(--ink3)">${dupes}</div><div class="isl">Duplicados</div></div>`+
+      `<div class="is-i"><div class="isn" style="color:var(--red)">${skipped}</div><div class="isl">Otras ciudades</div></div>`+
+      `<div class="is-i"><div class="isn" style="color:var(--sand)">${LEADS.length}</div><div class="isl">Total CRM</div></div>`;
+    document.getElementById('import-log').innerHTML=
+      newLeads.slice(0,10).map(l=>`<div style="font-size:12px;color:var(--ink2);padding:3px 0;border-bottom:1px solid var(--line)">✅ ${l.USUARIO||l.EMAIL||'Lead'} — ${l['REF. CLIENTE']||''}</div>`).join('');
+    if(added>0)toast(added+' leads importados','ok');
+    else if(dupes>0)toast('Ya estaban todos ('+dupes+' duplicados)','in');
+    else toast('No se encontraron leads válidos','er');
+  }catch(err){
+    toast('Error al importar: '+err.message,'er');
+    console.error(err);
+  }
+}
+
+
 // ─── INIT ────────────────────────────────────────────────────
 function init(){
   loadCfg(); loadLeads(); loadActivos(); loadCustomTemplates(); loadTplEdits();
@@ -1071,13 +1166,13 @@ function renderLeads(){
   document.getElementById('leads-tbody').innerHTML=pg.length?pg.map(l=>{
     const idx=LEADS.indexOf(l),e=l.ESTADO_LEAD||'NUEVO',lang=(l.IDIOMA||'').toLowerCase();
     const tipo=getLeadType(l);
-    const tipoTag=tipo==='hab'?'<span style="font-size:9px;padding:1px 4px;border-radius:3px;background:rgba(155,127,232,.15);color:#9b7fe8;margin-left:4px">HAB</span>':tipo==='local'?'<span style="font-size:9px;padding:1px 4px;border-radius:3px;background:rgba(232,160,74,.15);color:var(--a);margin-left:4px">LOC</span>':'';
+    const tipoTag=tipo==='hab'?'<span style="font-size:9px;padding:1px 4px;border-radius:3px;background:rgba(155,127,232,.15);color:#9b7fe8;margin-left:4px">HAB</span>':tipo==='local'?'<span style="font-size:9px;padding:1px 4px;border-radius:3px;background:rgba(232,160,74,.15);color:var(--sand);margin-left:4px">LOC</span>':'';
     return `<tr onclick="openLead(${idx})">
       <td><b>${l.USUARIO||'—'}</b>${tipoTag}</td>
-      <td style="font-size:12px;color:var(--t2)">${l['REF. CLIENTE']||'—'}</td>
-      <td><div style="font-size:12px;color:var(--t2)">${l.EMAIL||''}</div><div style="font-size:11px;color:var(--t3)">${l.TELÉFONO||''}</div></td>
+      <td style="font-size:12px;color:var(--ink2)">${l['REF. CLIENTE']||'—'}</td>
+      <td><div style="font-size:12px;color:var(--ink2)">${l.EMAIL||''}</div><div style="font-size:11px;color:var(--ink3)">${l.TELÉFONO||''}</div></td>
       <td>${LF[lang]||''} <span class="lb">${(l.IDIOMA||'?').toUpperCase()}</span></td>
-      <td style="font-size:12px;color:var(--t3)">${l.MES||'—'}</td>
+      <td style="font-size:12px;color:var(--ink3)">${l.MES||'—'}</td>
       <td><span class="badge" style="background:${ESTADO_BG[e]||'rgba(0,0,0,.1)'};color:${ESTADO_COLORS[e]||'#888'};font-size:10px"><span class="bdot"></span>${ESTADO_LABELS[e]||e}</span></td>
       <td onclick="event.stopPropagation()"><div class="abts">
         <button class="ib wa" onclick="quickWA(${idx})" title="WhatsApp">💬</button>
@@ -1085,7 +1180,7 @@ function renderLeads(){
         <button class="ib" onclick="openLead(${idx})" title="Ver">👁</button>
       </div></td>
     </tr>`;
-  }).join(''):'<tr><td colspan="7"><div style="text-align:center;padding:40px;color:var(--t3)">🔍 Sin resultados</div></td></tr>';
+  }).join(''):'<tr><td colspan="7"><div style="text-align:center;padding:40px;color:var(--ink3)">🔍 Sin resultados</div></td></tr>';
   document.getElementById('page-info').textContent=`${Math.min(st+1,tot)}–${Math.min(st+PER_PAGE,tot)} de ${tot}`;
   const pb=document.getElementById('page-btns');pb.innerHTML='';
   const prev=document.createElement('button');prev.className='pb';prev.textContent='‹';prev.disabled=currentPage===1;prev.onclick=()=>{currentPage--;renderLeads();};pb.appendChild(prev);
@@ -1114,7 +1209,7 @@ function renderKanban(){
         <div class="kcn">${l.USUARIO||'—'}</div>
         <div class="kcp">${tipoIcon} ${(l['REF. CLIENTE']||'').substring(0,26)}</div>
         <div class="kcf">
-          <span style="font-size:10px;color:var(--t3)">${l.MES||''}</span>
+          <span style="font-size:10px;color:var(--ink3)">${l.MES||''}</span>
           <span class="lb">${LF[lang]||''} ${(l.IDIOMA||'?').toUpperCase()}</span>
         </div>
         <div class="kca" onclick="event.stopPropagation()">
@@ -1177,46 +1272,113 @@ function dropLead(e,newStatus){
 
 function renderActivos(){
   const pl={};LEADS.forEach(l=>{const r=l['REF. CLIENTE']||'';pl[r]=(pl[r]||0)+1;});
-  document.getElementById('activos-grid').innerHTML=ACTIVOS.map((a,i)=>{
+  const searchVal=(document.getElementById('activos-search')?.value||'').toLowerCase();
+  const tipoFilter=document.getElementById('activos-filter-tipo')?.value||'';
+  const calFilter=document.getElementById('activos-filter-cal')?.value||'';
+
+  function parseDispo(s){
+    if(!s)return new Date(9999,0,1);
+    const p=s.split('/');
+    return p.length===3?new Date(parseInt(p[2]),parseInt(p[1])-1,parseInt(p[0])):new Date(9999,0,1);
+  }
+  const today=new Date(); today.setHours(0,0,0,0);
+
+  let sorted=ACTIVOS
+    .filter(a=>!a.is_hab_child)
+    .filter(a=>{
+      if(!searchVal)return true;
+      return (a.ref+(a.direccion||'')+(a.nombre||'')).toLowerCase().includes(searchVal);
+    })
+    .filter(a=>!tipoFilter||(a.tipo_gestion||'gestionado')===tipoFilter)
+    .filter(a=>{
+      if(!calFilter)return true;
+      if(calFilter==='visible')return a.cal_visible!==false;
+      if(calFilter==='hidden')return a.cal_visible===false;
+      return true;
+    })
+    .sort((a,b)=>parseDispo(a.disponibilidad)-parseDispo(b.disponibilidad));
+
+  const rows=sorted.map(a=>{
+    const idx=ACTIVOS.indexOf(a);
+    const dispo=parseDispo(a.disponibilidad);
+    const dias=Math.round((dispo-today)/86400000);
+    let borderColor='var(--line)', dispoLabel='Sin fecha', dispoColor='var(--ink3)';
+    if(a.disponibilidad){
+      if(dias<=0){borderColor='var(--green)';dispoLabel='Disponible ya';dispoColor='var(--green)';}
+      else if(dias<=7){borderColor='var(--sand)';dispoLabel='En '+dias+'d';dispoColor='var(--sand)';}
+      else if(dias<=30){borderColor='var(--blue)';dispoLabel='En '+dias+'d';dispoColor='var(--blue)';}
+      else{borderColor='var(--line2)';dispoLabel='En '+dias+'d';dispoColor='var(--ink3)';}
+    }
     const ps=[];
-    if(a.precio_corp)ps.push(`<span class="ptag pc">Corp: ${a.precio_corp}€</span>`);
-    if(a.precio_h01)ps.push(`<span class="ptag ph">H01: ${a.precio_h01}€</span>`);
-    if(a.precio_h02)ps.push(`<span class="ptag ph">H02: ${a.precio_h02}€</span>`);
-    if(a.precio_h03)ps.push(`<span class="ptag ph">H03: ${a.precio_h03}€</span>`);
-    if(a.precio_h04)ps.push(`<span class="ptag ph">H04: ${a.precio_h04}€</span>`);
-    const hasIcal=a.ical_url?'✅':'—';
-    const dispoColor=a.disponibilidad?'color:var(--green)':'color:var(--t3)';
-    const syncStatus=a._ical_synced
-      ?`<span style="font-size:10px;color:var(--green)">🔄 ${a._ical_synced}</span>`
-      :'';
-    return `<div class="acard" style="${a.ical_url?'border-color:rgba(46,194,126,.3)':''}">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px">
-        <div class="aref">${a.ref}</div>
-        <div style="display:flex;gap:6px;align-items:center">
-          ${syncStatus}
-          ${a.ical_url?`<button class="btn btn-g" style="padding:3px 8px;font-size:11px" onclick="syncIcal(${i})">🔄 Sync ICAL</button>`:''}
-          <button class="btn btn-p" style="padding:3px 8px;font-size:11px" onclick="editActivo(${i})">✏️ Editar</button>
-        </div>
+    if(a.precio_corp)ps.push(`<span class="ptag pc">${a.precio_corp}€</span>`);
+    else if(a.precio_h01)ps.push(`<span class="ptag ph">H01:${a.precio_h01}€</span>`);
+    const gestion=a.tipo_gestion==='comercializado'
+      ?`<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:var(--blue-lt);color:var(--blue);font-weight:600">COMERCIAL</span>`:'';
+    const ical=a.ical_url
+      ?`<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:var(--green-lt);color:var(--green);font-weight:600">ICAL</span>`:'';
+    const calOff=a.cal_visible===false
+      ?`<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:var(--red-lt);color:var(--red);font-weight:600">CAL OFF</span>`:'';
+    const modeBtn=a.is_hab_parent
+      ?`<span onclick="event.stopPropagation();toggleActivoModo('${a.ref}')" style="cursor:pointer;font-size:9px;padding:2px 6px;border-radius:3px;border:1px solid var(--line2);background:var(--cream2);color:${a.modo==='hab'?'var(--purple)':'var(--blue)'}">${a.modo==='hab'?'🛏 HAB':'🏠 CORP'}</span>`:'';
+    const guest=a._currentGuest?`<span style="font-size:11px;color:var(--sand)">👤 ${a._currentGuest}</span>`:'';
+
+    // Children chips for hab mode
+    let childChips='';
+    if(a.is_hab_parent&&a.modo==='hab'){
+      const children=ACTIVOS.filter(c=>c.is_hab_child&&c.hab_parent===a.ref);
+      childChips=`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+        ${children.map(c=>{
+          const cd=parseDispo(c.disponibilidad);
+          const dd=Math.round((cd-today)/86400000);
+          const cc=dd<=0?'var(--green)':dd<=7?'var(--sand)':'var(--ink3)';
+          const ci=ACTIVOS.indexOf(c);
+          return `<div style="display:flex;align-items:center;gap:5px;padding:3px 8px;background:var(--cream2);border-radius:5px;border:1px solid var(--line)">
+            <span style="font-size:10px;font-weight:600;color:var(--ink2)">H${c.hab_num}</span>
+            ${c.precio_h01?`<span style="font-size:10px;color:var(--sand)">${c.precio_h01}€</span>`:''}
+            ${c.disponibilidad?`<span style="font-size:10px;color:${cc}">${c.disponibilidad}</span>`:''}
+            ${c.ical_url?`<button onclick="syncIcal(${ci})" style="font-size:9px;padding:1px 5px;border:1px solid var(--line2);border-radius:3px;background:none;cursor:pointer">↻</button>`:''}
+          </div>`;
+        }).join('')}
+      </div>`;
+    }
+
+    return `<div style="display:grid;grid-template-columns:70px 1fr auto auto;gap:10px;align-items:start;padding:11px 14px;background:#fff;border:1px solid var(--line);border-left:3px solid ${borderColor};border-radius:8px">
+      <div style="text-align:center">
+        <div style="font-family:var(--font-display);font-size:20px;font-weight:500;color:${dispoColor};line-height:1">${a.disponibilidad?a.disponibilidad.split('/')[0]:'—'}</div>
+        <div style="font-size:9px;color:var(--ink3)">${a.disponibilidad?a.disponibilidad.split('/').slice(1).join('/'):'sin fecha'}</div>
+        <div style="font-size:10px;font-weight:600;color:${dispoColor};margin-top:2px">${dispoLabel}</div>
       </div>
-      <div class="aaddr">${a.direccion||a.nombre}</div>
-      <div class="aprices">${ps.join('')||'<span style="font-size:11px;color:var(--t3)">Sin precios</span>'}</div>
-      <div style="display:flex;gap:16px;font-size:12px;margin-top:6px">
-        <div><span style="color:var(--t3)">📅 </span><span style="${dispoColor}">${a.disponibilidad||'Sin fecha'}</span></div>
-        <div><span style="color:var(--t3)">ICAL: </span><span style="color:${a.ical_url?'var(--green)':'var(--t3)'}">${hasIcal}</span></div>
-        <div><span style="color:var(--t3)">👥 </span>${pl[a.ref]||0} leads</div>
+      <div style="min-width:0">
+        <div style="display:flex;align-items:center;gap:5px;margin-bottom:3px;flex-wrap:wrap">
+          <span style="font-size:10px;color:var(--ink3);font-weight:600">${a.ref}</span>
+          ${ical}${gestion}${calOff}${modeBtn}${guest}
+        </div>
+        <div style="font-size:13px;font-weight:500;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${(a.direccion||a.nombre||a.ref).split(',')[0].substring(0,42)}</div>
+        <div style="display:flex;gap:5px;margin-top:4px;flex-wrap:wrap">${ps.join('')}</div>
+        ${childChips}
+      </div>
+      <div style="display:flex;flex-direction:column;gap:3px;align-items:flex-end;font-size:11px;color:var(--ink3)">
+        ${pl[a.ref]?`<span>👥 ${pl[a.ref]}</span>`:''}
+        ${a.idealista_url?`<a href="${a.idealista_url}" target="_blank" style="color:var(--blue);text-decoration:none;font-size:11px">↗ Idealista</a>`:''}
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px">
+        ${a.ical_url?`<button class="btn btn-g btn-sm" onclick="syncIcal(${idx})" style="font-size:11px">↻</button>`:''}
+        <button class="btn btn-g btn-sm" onclick="editActivo(${idx})" style="font-size:11px">✏️</button>
       </div>
     </div>`;
   }).join('');
+
+  document.getElementById('activos-grid').innerHTML=rows||'<div style="text-align:center;padding:40px;color:var(--ink3)">Sin activos</div>';
 }
 
 function editActivo(idx){
   const a=ACTIVOS[idx];
   const d=document.createElement('div');
   d.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:2000;display:flex;align-items:center;justify-content:center;';
-  d.innerHTML=`<div style="background:var(--n2);border:1px solid var(--b2);border-radius:14px;width:640px;max-width:95vw;max-height:90vh;display:flex;flex-direction:column;overflow:hidden">
-    <div style="padding:15px 20px;border-bottom:1px solid var(--b);display:flex;align-items:center;gap:10px">
+  d.innerHTML=`<div style="background:#fff;border:1px solid var(--line2);border-radius:14px;width:640px;max-width:95vw;max-height:90vh;display:flex;flex-direction:column;overflow:hidden">
+    <div style="padding:15px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px">
       <div style="flex:1;font-weight:600">✏️ Editar activo — ${a.ref}</div>
-      <button onclick="this.closest('div').parentElement.parentElement.remove()" style="background:none;border:none;color:var(--t3);font-size:18px;cursor:pointer">✕</button>
+      <button onclick="this.closest('div').parentElement.parentElement.remove()" style="background:none;border:none;color:var(--ink3);font-size:18px;cursor:pointer">✕</button>
     </div>
     <div style="flex:1;overflow-y:auto;padding:18px 20px;display:grid;grid-template-columns:1fr 1fr;gap:14px">
       <div style="grid-column:1/-1"><div class="dl">Dirección</div><input id="ea-dir" class="sinp" style="width:100%" value="${a.direccion||a.nombre||''}"></div>
@@ -1230,14 +1392,14 @@ function editActivo(idx){
       <div style="grid-column:1/-1">
         <div class="dl" style="display:flex;align-items:center;gap:8px">
           URL ICAL (Homming)
-          ${a.ical_url?'<span style="font-size:10px;color:var(--green)">✅ Conectado</span>':'<span style="font-size:10px;color:var(--t3)">Sin conectar</span>'}
+          ${a.ical_url?'<span style="font-size:10px;color:var(--green)">✅ Conectado</span>':'<span style="font-size:10px;color:var(--ink3)">Sin conectar</span>'}
         </div>
         <input id="ea-ical" class="sinp" style="width:100%" value="${a.ical_url||''}" placeholder="https://app.homming.com/calendar/ical/...">
-        <div style="font-size:11px;color:var(--t3);margin-top:4px">Al guardar, haz clic en "🔄 Sync ICAL" para obtener la disponibilidad automáticamente.</div>
+        <div style="font-size:11px;color:var(--ink3);margin-top:4px">Al guardar, haz clic en "🔄 Sync ICAL" para obtener la disponibilidad automáticamente.</div>
       </div>
-      <div style="grid-column:1/-1"><div class="dl">Notas</div><textarea id="ea-notas" style="width:100%;background:var(--n3);border:1px solid var(--b);border-radius:7px;padding:7px 9px;color:var(--t);font-size:13px;outline:none;resize:vertical;min-height:60px;font-family:inherit">${a.notas||''}</textarea></div>
+      <div style="grid-column:1/-1"><div class="dl">Notas</div><textarea id="ea-notas" style="width:100%;background:var(--cream2);border:1px solid var(--line);border-radius:7px;padding:7px 9px;color:var(--ink);font-size:13px;outline:none;resize:vertical;min-height:60px;font-family:inherit">${a.notas||''}</textarea></div>
     </div>
-    <div style="padding:12px 20px;border-top:1px solid var(--b);display:flex;gap:8px">
+    <div style="padding:12px 20px;border-top:1px solid var(--line);display:flex;gap:8px">
       <button class="btn btn-p" onclick="saveActivoEdit(${idx});this.closest('div').parentElement.parentElement.remove()">💾 Guardar</button>
       ${a.ical_url?`<button class="btn btn-g" onclick="saveActivoEdit(${idx});syncIcal(${idx})">💾 Guardar + Sync ICAL</button>`:''}
       <button class="btn btn-g" style="margin-left:auto" onclick="this.closest('div').parentElement.parentElement.remove()">Cancelar</button>
@@ -1328,33 +1490,33 @@ function renderPlantillas(){
 
   const renderCard=(t,isBase,isCustom)=>{
     const preview=resolveVars(getTplBase(t),null,t).substring(0,85);
-    const badge=isBase?'<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(46,194,126,.15);color:var(--green)">BASE</span>':isCustom?'<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(232,160,74,.15);color:var(--a)">CUSTOM</span>':'';
-    const edited=t._edited?'<span style="font-size:9px;color:var(--a)">✏️</span>':'';
-    return `<div style="background:var(--n2);border:1px solid var(--b);border-radius:10px;padding:13px;cursor:pointer;transition:border .15s;position:relative" onclick="showTpl('${t.id}')" onmouseenter="this.style.borderColor='var(--b2)'" onmouseleave="this.style.borderColor='var(--b)'">
+    const badge=isBase?'<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(46,194,126,.15);color:var(--green)">BASE</span>':isCustom?'<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(232,160,74,.15);color:var(--sand)">CUSTOM</span>':'';
+    const edited=t._edited?'<span style="font-size:9px;color:var(--sand)">✏️</span>':'';
+    return `<div style="background:#fff;border:1px solid var(--line);border-radius:10px;padding:13px;cursor:pointer;transition:border .15s;position:relative" onclick="showTpl('${t.id}')" onmouseenter="this.style.borderColor='var(--line2)'" onmouseleave="this.style.borderColor='var(--line)'">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:5px;gap:8px">
         <div style="font-size:13px;font-weight:500;flex:1">${t.name} ${edited}</div>
-        <div style="display:flex;gap:4px;flex-shrink:0">${badge}<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:${cc[t.cat]||''};color:${ct[t.cat]||'var(--t3)'}"> ${t.cat.toUpperCase()}</span></div>
+        <div style="display:flex;gap:4px;flex-shrink:0">${badge}<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:${cc[t.cat]||''};color:${ct[t.cat]||'var(--ink3)'}"> ${t.cat.toUpperCase()}</span></div>
       </div>
       <div style="display:flex;gap:6px;margin-bottom:7px;align-items:center">${LF[t.lang]||''} <span class="lb">${t.lang.toUpperCase()}</span></div>
-      <div style="font-size:11px;color:var(--t3);line-height:1.5;max-height:38px;overflow:hidden">${preview}...</div>
-      ${isCustom?`<button onclick="event.stopPropagation();deleteCustomTpl('${t.id}')" style="position:absolute;top:8px;right:8px;background:none;border:none;color:var(--t3);cursor:pointer;font-size:12px" title="Eliminar">🗑</button>`:''}
+      <div style="font-size:11px;color:var(--ink3);line-height:1.5;max-height:38px;overflow:hidden">${preview}...</div>
+      ${isCustom?`<button onclick="event.stopPropagation();deleteCustomTpl('${t.id}')" style="position:absolute;top:8px;right:8px;background:none;border:none;color:var(--ink3);cursor:pointer;font-size:12px" title="Eliminar">🗑</button>`:''}
     </div>`;
   };
 
-  let html='';
+  let tplHtml='';
   if(base.length){
-    html+=`<div style="grid-column:1/-1;font-size:11px;color:var(--t3);text-transform:uppercase;letter-spacing:.7px;margin-bottom:4px;margin-top:8px">Plantillas base (auto-selección)</div>`;
-    html+=base.map(t=>renderCard(t,true,false)).join('');
+    tplHtml+=`<div style="grid-column:1/-1;font-size:11px;color:var(--ink3);text-transform:uppercase;letter-spacing:.7px;margin-bottom:4px;margin-top:8px">Plantillas base (auto-selección)</div>`;
+    tplHtml+=base.map(t=>renderCard(t,true,false)).join('');
   }
   if(custom.length){
-    html+=`<div style="grid-column:1/-1;font-size:11px;color:var(--t3);text-transform:uppercase;letter-spacing:.7px;margin-bottom:4px;margin-top:16px">Mis plantillas</div>`;
-    html+=custom.map(t=>renderCard(t,false,true)).join('');
+    tplHtml+=`<div style="grid-column:1/-1;font-size:11px;color:var(--ink3);text-transform:uppercase;letter-spacing:.7px;margin-bottom:4px;margin-top:16px">Mis plantillas</div>`;
+    tplHtml+=custom.map(t=>renderCard(t,false,true)).join('');
   }
   if(extra.length&&!cat&&!lang){
-    html+=`<div style="grid-column:1/-1;font-size:11px;color:var(--t3);text-transform:uppercase;letter-spacing:.7px;margin-bottom:4px;margin-top:16px">Plantillas adicionales</div>`;
-    html+=extra.map(t=>renderCard(t,false,false)).join('');
+    tplHtml+=`<div style="grid-column:1/-1;font-size:11px;color:var(--ink3);text-transform:uppercase;letter-spacing:.7px;margin-bottom:4px;margin-top:16px">Plantillas adicionales</div>`;
+    tplHtml+=extra.map(t=>renderCard(t,false,false)).join('');
   }
-  document.getElementById('tpl-grid').innerHTML=html||'<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--t3)">Sin plantillas</div>';
+  document.getElementById('tpl-grid').innerHTML=tplHtml||'<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--ink3)">Sin plantillas</div>';
 }
 
 function showTpl(id){
@@ -1362,18 +1524,18 @@ function showTpl(id){
   const resolved=resolveVars(getTplBase(tpl),null,tpl);
   const d=document.createElement('div');
   d.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:2000;display:flex;align-items:center;justify-content:center;';
-  d.innerHTML=`<div style="background:var(--n2);border:1px solid var(--b2);border-radius:14px;width:620px;max-width:95vw;max-height:85vh;display:flex;flex-direction:column;overflow:hidden">
-    <div style="padding:14px 18px;border-bottom:1px solid var(--b);display:flex;align-items:center;gap:9px">
+  d.innerHTML=`<div style="background:#fff;border:1px solid var(--line2);border-radius:14px;width:620px;max-width:95vw;max-height:85vh;display:flex;flex-direction:column;overflow:hidden">
+    <div style="padding:14px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:9px">
       <div style="flex:1;font-weight:600">${tpl.name}</div>
-      <button onclick="this.closest('div').parentElement.parentElement.remove()" style="background:none;border:none;color:var(--t3);font-size:18px;cursor:pointer">✕</button>
+      <button onclick="this.closest('div').parentElement.parentElement.remove()" style="background:none;border:none;color:var(--ink3);font-size:18px;cursor:pointer">✕</button>
     </div>
-    <div style="padding:8px 18px;background:rgba(255,255,255,.02);border-bottom:1px solid var(--b);font-size:11px;color:var(--t3)">
-      Variables automáticas: <code style="color:var(--a)">{{NOMBRE}}</code> · <code style="color:var(--a)">{{PRECIO}}€</code> · <code style="color:var(--a)">{{DISPONIBILIDAD}}</code> · <code style="color:var(--a)">{{URL_IDEALISTA}}</code>
+    <div style="padding:8px 18px;background:rgba(255,255,255,.02);border-bottom:1px solid var(--line);font-size:11px;color:var(--ink3)">
+      Variables automáticas: <code style="color:var(--sand)">{{NOMBRE}}</code> · <code style="color:var(--sand)">{{PRECIO}}€</code> · <code style="color:var(--sand)">{{DISPONIBILIDAD}}</code> · <code style="color:var(--sand)">{{URL_IDEALISTA}}</code>
     </div>
     <div style="flex:1;overflow-y:auto;padding:14px 18px">
-      <textarea id="tpl-edit-${id}" style="width:100%;height:280px;background:var(--n3);border:1px solid var(--b);border-radius:8px;padding:11px;color:var(--t2);font-size:13px;line-height:1.7;font-family:inherit;resize:vertical;outline:none">${resolved}</textarea>
+      <textarea id="tpl-edit-${id}" style="width:100%;height:280px;background:var(--cream2);border:1px solid var(--line);border-radius:8px;padding:11px;color:var(--ink2);font-size:13px;line-height:1.7;font-family:inherit;resize:vertical;outline:none">${resolved}</textarea>
     </div>
-    <div style="padding:11px 18px;border-top:1px solid var(--b);display:flex;gap:8px;flex-wrap:wrap">
+    <div style="padding:11px 18px;border-top:1px solid var(--line);display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn btn-p" onclick="navigator.clipboard.writeText(document.getElementById('tpl-edit-${id}').value).then(()=>{this.textContent='¡Copiado!';setTimeout(()=>this.textContent='📋 Copiar',1500)})">📋 Copiar</button>
       <button class="btn btn-g" onclick="saveTplEdit('${id}',document.getElementById('tpl-edit-${id}').value);this.textContent='✅ Guardado';setTimeout(()=>this.textContent='Guardar',1500)">Guardar</button>
       <button class="btn btn-g" onclick="resetTpl('${id}');this.closest('div').parentElement.parentElement.remove()">↩ Restaurar</button>
@@ -1386,18 +1548,18 @@ function showTpl(id){
 function newTemplate(){
   const d=document.createElement('div');
   d.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:2000;display:flex;align-items:center;justify-content:center;';
-  d.innerHTML=`<div style="background:var(--n2);border:1px solid var(--b2);border-radius:14px;width:620px;max-width:95vw;max-height:85vh;display:flex;flex-direction:column;overflow:hidden">
-    <div style="padding:14px 18px;border-bottom:1px solid var(--b);font-weight:600">Nueva plantilla</div>
+  d.innerHTML=`<div style="background:#fff;border:1px solid var(--line2);border-radius:14px;width:620px;max-width:95vw;max-height:85vh;display:flex;flex-direction:column;overflow:hidden">
+    <div style="padding:14px 18px;border-bottom:1px solid var(--line);font-weight:600">Nueva plantilla</div>
     <div style="flex:1;overflow-y:auto;padding:16px 18px;display:flex;flex-direction:column;gap:10px">
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
         <div><div class="dl">Nombre</div><input id="new-tpl-name" class="sinp" placeholder="Mi plantilla" style="width:100%"></div>
         <div><div class="dl">Tipo</div><select id="new-tpl-cat" class="fs" style="width:100%"><option value="piso">Piso</option><option value="hab">Habitación</option><option value="local">Local</option><option value="ops">Operación</option></select></div>
         <div><div class="dl">Idioma</div><select id="new-tpl-lang" class="fs" style="width:100%"><option value="es">🇪🇸 Español</option><option value="en">🇬🇧 Inglés</option></select></div>
       </div>
-      <div style="font-size:11px;color:var(--t3)">Variables disponibles: <code style="color:var(--a)">{{NOMBRE}}</code> <code style="color:var(--a)">{{PRECIO}}€</code> <code style="color:var(--a)">{{DISPONIBILIDAD}}</code> <code style="color:var(--a)">{{URL_IDEALISTA}}</code></div>
-      <textarea id="new-tpl-txt" style="flex:1;min-height:250px;background:var(--n3);border:1px solid var(--b);border-radius:8px;padding:11px;color:var(--t2);font-size:13px;line-height:1.7;font-family:inherit;resize:vertical;outline:none" placeholder="Hola {{NOMBRE}},&#10;&#10;Escribe aquí tu plantilla..."></textarea>
+      <div style="font-size:11px;color:var(--ink3)">Variables disponibles: <code style="color:var(--sand)">{{NOMBRE}}</code> <code style="color:var(--sand)">{{PRECIO}}€</code> <code style="color:var(--sand)">{{DISPONIBILIDAD}}</code> <code style="color:var(--sand)">{{URL_IDEALISTA}}</code></div>
+      <textarea id="new-tpl-txt" style="flex:1;min-height:250px;background:var(--cream2);border:1px solid var(--line);border-radius:8px;padding:11px;color:var(--ink2);font-size:13px;line-height:1.7;font-family:inherit;resize:vertical;outline:none" placeholder="Hola {{NOMBRE}},&#10;&#10;Escribe aquí tu plantilla..."></textarea>
     </div>
-    <div style="padding:11px 18px;border-top:1px solid var(--b);display:flex;gap:8px">
+    <div style="padding:11px 18px;border-top:1px solid var(--line);display:flex;gap:8px">
       <button class="btn btn-p" onclick="saveNewTemplate();this.closest('div').parentElement.parentElement.remove()">Guardar plantilla</button>
       <button class="btn btn-g" onclick="this.closest('div').parentElement.parentElement.remove()">Cancelar</button>
     </div>
@@ -1450,19 +1612,38 @@ function openLead(idx){
 
   document.getElementById('m-body').innerHTML=`
     <div class="dgrid">
-      <div><div class="dl">Email</div><div class="dv"><a href="mailto:${l.EMAIL||''}">${l.EMAIL||'—'}</a></div></div>
-      <div><div class="dl">Teléfono</div><div class="dv">${l.TELÉFONO||'—'}</div></div>
-      <div><div class="dl">Propiedad (${tipo.toUpperCase()})</div><div class="dv">${l['DESCRIPCIÓN']||l['REF. CLIENTE']||'—'}</div></div>
+      <div style="grid-column:1/-1">
+        <div class="dl">Nombre</div>
+        <input class="sinp" id="m-nombre" value="${(l.USUARIO||'').replace(/[\x22]/g,'&quot;')}" placeholder="Sin nombre" style="width:100%;font-size:14px;font-weight:500">
+      </div>
+      <div>
+        <div class="dl">Email</div>
+        <input class="sinp" id="m-email" value="${(l.EMAIL||'').replace(/[\x22]/g,'&quot;')}" placeholder="—" style="width:100%">
+      </div>
+      <div>
+        <div class="dl">Teléfono</div>
+        <input class="sinp" id="m-tel" value="${(l['TELÉFONO']||'').replace(/[\x22]/g,'&quot;')}" placeholder="—" style="width:100%">
+      </div>
+      <div>
+        <div class="dl">Idioma</div>
+        <select class="ssel" id="m-idioma" style="width:100%">
+          <option value="es" ${lang==='es'?'selected':''}>🇪🇸 Español</option>
+          <option value="en" ${lang==='en'?'selected':''}>🇬🇧 Inglés</option>
+        </select>
+      </div>
+      <div>
+        <div class="dl">Propiedad</div>
+        <div class="dv">${l['DESCRIPCIÓN']||l['REF. CLIENTE']||'—'}</div>
+      </div>
       <div><div class="dl">Ref.</div><div class="dv">${l['REF. CLIENTE']||'—'}</div></div>
       <div><div class="dl">Mes</div><div class="dv">${l.MES||'—'}</div></div>
-      <div><div class="dl">Idioma</div><div class="dv">${LF[lang]||''} ${(l.IDIOMA||'?').toUpperCase()}</div></div>
-      <div><div class="dl">Precio activo</div><div class="dv" style="color:var(--a);font-weight:500">${precioP!=='—'?precioP+'€':'—'}</div></div>
-      <div><div class="dl">Disponibilidad</div><div class="dv" style="color:var(--green)">${dispoP}</div></div>
+      <div><div class="dl">Precio</div><div class="dv" style="color:var(--sand);font-weight:500">${precioP!=='—'?precioP+'€':'—'}</div></div>
+      <div style="grid-column:1/-1"><div class="dl">Disponibilidad</div><div class="dv" style="color:var(--green)">${dispoP}</div></div>
     </div>
     <div class="stitle">Mensaje original</div>
     <div class="msgbox">${(l.MENSAJE||'Sin mensaje').replace(/\\n/g,'\n')}</div>
     <div class="stitle">Plantilla WhatsApp
-      <span style="font-size:10px;color:var(--t3);font-weight:400;text-transform:none;margin-left:6px">Auto-seleccionada por tipo (${tipo}) e idioma (${lang})</span>
+      <span style="font-size:10px;color:var(--ink3);font-weight:400;text-transform:none;margin-left:6px">Auto-seleccionada por tipo (${tipo}) e idioma (${lang})</span>
     </div>
     <select class="tpick" id="tpl-pick" onchange="previewTpl()">${tplOptions}</select>
     <div class="tprev" id="tpl-prev"></div>
@@ -1472,7 +1653,7 @@ function openLead(idx){
     </div>
     <div class="stitle">Observaciones</div>
     <textarea class="obsinput" id="m-obs">${l.OBSERVACIONES||''}</textarea>
-    ${hist.length?'<div class="stitle" style="margin-top:13px">Historial</div>'+hist.map(h=>`<div class="hi"><div class="hdot"></div><div><div style="font-size:12px;color:var(--t2)">${h.t}</div><div style="font-size:10px;color:var(--t3);margin-top:2px">${h.d}</div></div></div>`).join(''):''}`;
+    ${hist.length?'<div class="stitle" style="margin-top:13px">Historial</div>'+hist.map(h=>`<div class="hi"><div class="hdot"></div><div><div style="font-size:12px;color:var(--ink2)">${h.t}</div><div style="font-size:10px;color:var(--ink3);margin-top:2px">${h.d}</div></div></div>`).join(''):''}`;
   document.getElementById('lead-modal').classList.add('open');
   // Auto-preview the best template
   previewTpl();
@@ -1543,9 +1724,18 @@ function changeStatus(){
 }
 function saveLead(){
   if(currentLeadIdx===null)return;
-  LEADS[currentLeadIdx].ESTADO_LEAD=document.getElementById('m-status').value;
-  const ob=document.getElementById('m-obs');if(ob)LEADS[currentLeadIdx].OBSERVACIONES=ob.value;
-  saveLeads();renderLeads();renderKanban();renderDashboard();toast('Lead guardado','ok');
+  const l=LEADS[currentLeadIdx];
+  l.ESTADO_LEAD=document.getElementById('m-status').value;
+  const nm=document.getElementById('m-nombre'); if(nm) l.USUARIO=nm.value;
+  const em=document.getElementById('m-email');  if(em) l.EMAIL=em.value;
+  const tl=document.getElementById('m-tel');    if(tl) l['TELÉFONO']=tl.value;
+  const id=document.getElementById('m-idioma'); if(id) l.IDIOMA=id.value;
+  const ob=document.getElementById('m-obs');    if(ob) l.OBSERVACIONES=ob.value;
+  // Update modal header
+  const mname=document.getElementById('m-name');
+  if(mname) mname.textContent=l.USUARIO||l.EMAIL||'Lead';
+  saveLeads();renderLeads();renderKanban();renderDashboard();
+  toast('Lead guardado','ok');
 }
 function addHist(idx,text){
   const h=JSON.parse(LEADS[idx]._history||'[]');
@@ -1730,54 +1920,54 @@ function renderCalendar(){
   const DAYS_ES=['D','L','M','X','J','V','S'];
 
   // ── BUILD HTML ──────────────────────────────────────────────
-  let html=`<div class="pms-wrap"><div class="pms-grid" style="width:${totalW}px">`;
+  let calHtml=`<div class="pms-wrap"><div class="pms-grid" style="width:${totalW}px">`;
 
   // Header row 1: months
-  html+=`<div class="pms-header-row pms-sticky-top">
+  calHtml+=`<div class="pms-header-row pms-sticky-top">
     <div class="pms-corner pms-sticky-left">
       <span class="pms-corner-label">ALOJAMIENTO</span>
       <span class="pms-corner-count">${rows.filter(r=>r.type==='unit').length} unidades</span>
     </div>`;
   monthGroups.forEach(mg=>{
     const [y,m]=mg.month.split('-');
-    html+=`<div class="pms-month-cell" style="width:${mg.count*CELL_W}px">${MONTHS_ES[parseInt(m)]} ${y}</div>`;
+    calHtml+=`<div class="pms-month-cell" style="width:${mg.count*CELL_W}px">${MONTHS_ES[parseInt(m)]} ${y}</div>`;
   });
-  html+=`</div>`;
+  calHtml+=`</div>`;
 
   // Header row 2: day numbers + weekday
-  html+=`<div class="pms-header-row pms-sticky-top2">
+  calHtml+=`<div class="pms-header-row pms-sticky-top2">
     <div class="pms-corner-sub pms-sticky-left"></div>`;
   days.forEach(d=>{
     const isToday=dateKey(d)===dateKey(today);
     const weekend=d.getDay()===0||d.getDay()===6;
-    html+=`<div class="pms-day-cell${isToday?' pms-today':''}${weekend?' pms-weekend':''}" style="width:${CELL_W}px">
+    calHtml+=`<div class="pms-day-cell${isToday?' pms-today':''}${weekend?' pms-weekend':''}" style="width:${CELL_W}px">
       <div class="pms-day-dow">${DAYS_ES[d.getDay()]}</div>
       <div class="pms-day-num">${d.getDate()}</div>
     </div>`;
   });
-  html+=`</div>`;
+  calHtml+=`</div>`;
 
   // Rows
   rows.forEach((row,ri)=>{
     const isGroup=row.type==='group';
     const rh=isGroup?GROUP_H:ROW_H;
 
-    html+=`<div class="pms-row${isGroup?' pms-row-group':''}" style="height:${rh}px">`;
+    calHtml+=`<div class="pms-row${isGroup?' pms-row-group':''}" style="height:${rh}px">`;
 
     if(isGroup){
-      html+=`<div class="pms-row-label pms-sticky-left pms-group-label" style="width:${LABEL_W}px">
+      calHtml+=`<div class="pms-row-label pms-sticky-left pms-group-label" style="width:${LABEL_W}px">
         <span class="pms-group-name">${row.label}</span>
         <span class="pms-group-badge">${row.children} HAB</span>
         <button class="pms-mode-btn" onclick="toggleActivoModo('${row.ref}')">CORP</button>
       </div>`;
       days.forEach(d=>{
         const weekend=d.getDay()===0||d.getDay()===6;
-        html+=`<div class="pms-cell pms-cell-group${weekend?' pms-weekend':''}" style="width:${CELL_W}px"></div>`;
+        calHtml+=`<div class="pms-cell pms-cell-group${weekend?' pms-weekend':''}" style="width:${CELL_W}px"></div>`;
       });
     } else {
       const a=row.activo;
       const isOccupied=!!a._currentGuest;
-      html+=`<div class="pms-row-label pms-sticky-left" style="width:${LABEL_W}px">
+      calHtml+=`<div class="pms-row-label pms-sticky-left" style="width:${LABEL_W}px">
         <span class="pms-status-dot" style="background:${isOccupied?'#D9534F':'#5CB85C'}"></span>
         <span class="pms-row-ref">${row.label}</span>
         ${row.canToggle?`<button class="pms-mode-btn" onclick="event.stopPropagation();toggleActivoModo('${row.ref}')" title="Cambiar a Hab">HAB</button>`:''}
@@ -1788,7 +1978,7 @@ function renderCalendar(){
       days.forEach(d=>{
         const weekend=d.getDay()===0||d.getDay()===6;
         const isToday=dateKey(d)===dateKey(today);
-        html+=`<div class="pms-cell${weekend?' pms-weekend':''}${isToday?' pms-today-col':''}" style="width:${CELL_W}px"></div>`;
+        calHtml+=`<div class="pms-cell${weekend?' pms-weekend':''}${isToday?' pms-today-col':''}" style="width:${CELL_W}px"></div>`;
       });
 
       // Reservation bars
@@ -1824,7 +2014,7 @@ function renderCalendar(){
           }
           const isCheckinout = span===1;
 
-          html+=`<div class="pms-bar ${barClass}${isCheckinout?' pms-bar-thin':''}"
+          calHtml+=`<div class="pms-bar ${barClass}${isCheckinout?' pms-bar-thin':''}"
             style="left:${left+1}px;top:${(rh-22)/2}px;width:${width-2}px;height:22px"
             title="${guest}: ${ev.start} → ${ev.end}"
             data-ref="${row.ref}" data-guest="${guest}" data-start="${ev.start}" data-end="${ev.end}" onclick="showCalEventDetailFromEl(this)">
@@ -1841,13 +2031,13 @@ function renderCalendar(){
         if(fd&&fd>=CAL_START&&fd<=CAL_END){
           const off=daysBetween(CAL_START,fd);
           const lx=LABEL_W+off*CELL_W;
-          html+=`<div class="pms-free-flag" style="left:${lx}px;top:2px;height:${rh-4}px" title="Libre desde ${a.disponibilidad}">
+          calHtml+=`<div class="pms-free-flag" style="left:${lx}px;top:2px;height:${rh-4}px" title="Libre desde ${a.disponibilidad}">
             <div class="pms-free-flag-tip"></div>
           </div>`;
         }
       }
     }
-    html+=`</div>`;
+    calHtml+=`</div>`;
   });
 
   // Today vertical line
@@ -1855,11 +2045,11 @@ function renderCalendar(){
     const off=daysBetween(CAL_START,today);
     const totalRowH=rows.reduce((s,r)=>s+(r.type==='group'?GROUP_H:ROW_H),0);
     const lx=LABEL_W+off*CELL_W;
-    html+=`<div class="pms-today-line" style="left:${lx}px;top:${HEADER_H}px;height:${totalRowH}px"></div>`;
+    calHtml+=`<div class="pms-today-line" style="left:${lx}px;top:${HEADER_H}px;height:${totalRowH}px"></div>`;
   }
 
-  html+=`</div></div>`;
-  document.getElementById('cal-container').innerHTML=html;
+  calHtml+=`</div></div>`;
+  document.getElementById('cal-container').innerHTML=calHtml;
   document.getElementById('cal-activos-list').innerHTML='';
 
   // Stats bar
@@ -1980,6 +2170,101 @@ function showCalEventDetail(ref,guest,start,end){
   const a=ACTIVOS.find(x=>x.ref===ref);
   const addr=(a?.direccion||ref).split(',')[0];
   toast(guest+' · '+addr+' · '+start+' → '+end,'in');
+}
+
+
+
+function processImport(file){
+  const reader=new FileReader();
+  reader.onload=function(ev){
+    const data=new Uint8Array(ev.target.result);
+    if(typeof XLSX!=='undefined'){_doImport(data);}
+    else{
+      const sc=document.createElement('script');
+      sc.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+      sc.onload=()=>_doImport(data);
+      sc.onerror=()=>{toast('Error cargando SheetJS','er');};
+      document.head.appendChild(sc);
+      toast('Cargando soporte XLS...','in');
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function _doImport(data){
+  try{
+    let rows=[];
+    try{
+      const wb=XLSX.read(data,{type:'array'});
+      const sh=wb.Sheets[wb.SheetNames[0]];
+      rows=XLSX.utils.sheet_to_json(sh,{defval:''});
+    }catch(xlsErr){
+      const text=new TextDecoder('utf-8').decode(data);
+      const lines=text.split('\n').filter(l=>l.trim());
+      if(lines.length<2){toast('Archivo vacío','er');return;}
+      const sep=lines[0].includes('\t')?'\t':',';
+      const headers=lines[0].split(sep).map(h=>h.trim().replace(/"/g,''));
+      rows=lines.slice(1).map(line=>{
+        const vals=line.split(sep).map(v=>v.trim().replace(/"/g,''));
+        const obj={};headers.forEach((h,i)=>{obj[h]=vals[i]||'';});return obj;
+      });
+    }
+    if(!rows.length){toast('Sin datos en el archivo','er');return;}
+
+    const makeKey=(obj)=>{
+      const ref=String(obj['REF. IDEALISTA']||'').replace(/\.0$/,'').trim();
+      const email=String(obj.EMAIL||'').trim().toLowerCase();
+      const tel=String(obj['TELÉFONO']||obj.TELEFONO||'').replace(/[\s\-\+\(\)]/g,'').slice(-9);
+      const nombre=String(obj.USUARIO||'').trim().toLowerCase().slice(0,10);
+      if(ref&&email)return ref+'__'+email;
+      if(ref&&tel)return ref+'__t__'+tel;
+      if(ref&&nombre)return ref+'__n__'+nombre;
+      return ref+'__'+Date.now()+Math.random();
+    };
+
+    const existing=new Set(LEADS.map(l=>makeKey(l)));
+    let added=0,dupes=0,skipped=0;
+    const newLeads=[];
+
+    rows.forEach(row=>{
+      const obj={};
+      Object.keys(row).forEach(k=>{obj[k.trim()]=String(row[k]||'').trim();});
+      if(!obj['REF. IDEALISTA']&&!obj.EMAIL&&!obj.USUARIO)return;
+      // Skip non-Barcelona refs
+      const ref=(obj['REF. CLIENTE']||'').trim();
+      if(ref&&!ref.startsWith('B_')){skipped++;return;}
+      // Map estado using 6-state system
+      const rawEst=obj.ESTADO?.trim()||obj.ESTADO_LEAD?.trim()||'';
+      obj.ESTADO_LEAD=ESTADO_MAP_IMPORT[rawEst]||'NUEVO';
+      // Parse MES from FECHA
+      if(!obj.MES&&obj.FECHA){
+        const parts=obj.FECHA.split(/[\/\s]/);
+        if(parts.length>=3)obj.MES=parts[1].padStart(2,'0')+'/'+parts[2];
+      }
+      const key=makeKey(obj);
+      if(existing.has(key)){dupes++;return;}
+      existing.add(key);
+      newLeads.push(obj);
+      added++;
+    });
+
+    LEADS.push(...newLeads);
+    saveLeads();populateFilters();renderDashboard();renderLeads();renderKanban();
+    document.getElementById('import-results').classList.add('show');
+    document.getElementById('import-summary').innerHTML=
+      `<div class="is-i"><div class="isn" style="color:var(--green)">${added}</div><div class="isl">Nuevos</div></div>`+
+      `<div class="is-i"><div class="isn" style="color:var(--ink3)">${dupes}</div><div class="isl">Duplicados</div></div>`+
+      `<div class="is-i"><div class="isn" style="color:var(--red)">${skipped}</div><div class="isl">Otras ciudades</div></div>`+
+      `<div class="is-i"><div class="isn" style="color:var(--sand)">${LEADS.length}</div><div class="isl">Total CRM</div></div>`;
+    document.getElementById('import-log').innerHTML=
+      newLeads.slice(0,10).map(l=>`<div style="font-size:12px;color:var(--ink2);padding:3px 0;border-bottom:1px solid var(--line)">✅ ${l.USUARIO||l.EMAIL||'Lead'} — ${l['REF. CLIENTE']||''}</div>`).join('');
+    if(added>0)toast(added+' leads importados','ok');
+    else if(dupes>0)toast('Ya estaban todos ('+dupes+' duplicados)','in');
+    else toast('No se encontraron leads válidos','er');
+  }catch(err){
+    toast('Error al importar: '+err.message,'er');
+    console.error(err);
+  }
 }
 
 
